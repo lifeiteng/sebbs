@@ -4,11 +4,12 @@
 
 import itertools
 from pathlib import Path
-from typing import Callable, Iterable, Tuple, Union
+from typing import Any, Callable, Dict, Iterable, List, Tuple, Union
 
 import numpy as np
 from sed_scores_eval import collar_based, intersection_based, io
 from sed_scores_eval.base_modules.scores import validate_score_dataframe
+from tqdm import tqdm
 
 from sebbs.change_detection import change_detection
 from sebbs.utils import sed_scores_from_detections, sed_scores_from_sebbs
@@ -53,6 +54,25 @@ class CSEBBsPredictor:
         self.merge_threshold_rel = merge_threshold_rel
         self.detection_threshold = detection_threshold
         self.sound_classes = sound_classes
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "step_filter_length": self.step_filter_length,
+            "merge_threshold_abs": self.merge_threshold_abs,
+            "merge_threshold_rel": self.merge_threshold_rel,
+            "detection_threshold": self.detection_threshold,
+            "sound_classes": self.sound_classes,
+        }
+
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> "CSEBBsPredictor":
+        return cls(
+            step_filter_length=d["step_filter_length"],
+            merge_threshold_abs=d["merge_threshold_abs"],
+            merge_threshold_rel=d["merge_threshold_rel"],
+            detection_threshold=d["detection_threshold"],
+            sound_classes=d["sound_classes"],
+        )
 
     def copy(self):
         """get copy of the class instance (CSEBBsPredictor)"""
@@ -178,7 +198,9 @@ class CSEBBsPredictor:
         else:
             step_filter_length = self.step_filter_length
         change_detection_out = {}
-        for key, scores_df in scores.items():
+        for key, scores_df in tqdm(
+            scores.items(), desc=f"Change detection", total=len(scores)
+        ):
             timestamps, self.sound_classes = validate_score_dataframe(scores_df, event_classes=self.sound_classes)
             scores_arr = scores_df[self.sound_classes].to_numpy()
             change_detection_out[key] = change_detection(scores_arr, timestamps, step_filter_length)
@@ -333,6 +355,33 @@ def _merge_scores(seg_bounds, mean_scores, min_scores, max_scores, seg_idx):
     return seg_bounds, mean_scores, min_scores, max_scores
 
 
+def _run(
+    scores: dict,
+    step_filter_lengths: List[float],
+    merge_thresholds_abs: Iterable = (0.15, 0.2, 0.3),
+    merge_thresholds_rel: Iterable = (1.5, 2.0, 3.0),
+    either_abs_or_rel_threshold: bool = True,
+):
+    csebbs = []
+    for step_filt_len in step_filter_lengths:
+        csebbs_predictor = CSEBBsPredictor(
+            step_filter_length=step_filt_len,
+        )
+        change_detection = csebbs_predictor._run_change_detection(scores)
+        if either_abs_or_rel_threshold:
+            it = [(thres_abs, np.inf) for thres_abs in merge_thresholds_abs] + [
+                (np.inf, thres_rel) for thres_rel in merge_thresholds_rel
+            ]
+        else:
+            it = itertools.product(merge_thresholds_abs, merge_thresholds_rel)
+        for abs_thres, rel_thres in tqdm(it, desc="Get sebbs", total=len(it)):
+            pred = csebbs_predictor.copy()
+            pred.merge_threshold_abs = abs_thres
+            pred.merge_threshold_rel = rel_thres
+            csebbs.append((pred, pred._get_sebbs_from_change_detection(change_detection)))
+    return csebbs
+
+
 def tune(
     scores: Union[str, dict],
     ground_truth: Union[str, dict],
@@ -382,23 +431,34 @@ def tune(
         ground_truth = io.read_ground_truth_events(ground_truth)
     if isinstance(audio_durations, (str, Path)):
         audio_durations = io.read_audio_durations(audio_durations)
-    csebbs = []
-    for step_filt_len in step_filter_lengths:
-        csebbs_predictor = CSEBBsPredictor(
-            step_filter_length=step_filt_len,
-        )
-        change_detection = csebbs_predictor._run_change_detection(scores)
-        if either_abs_or_rel_threshold:
-            it = [(thres_abs, np.inf) for thres_abs in merge_thresholds_abs] + [
-                (np.inf, thres_rel) for thres_rel in merge_thresholds_rel
+
+    if True:
+        from concurrent.futures import ProcessPoolExecutor, as_completed
+        from functools import reduce
+        from operator import add
+
+        with ProcessPoolExecutor(max_workers=len(step_filter_lengths)) as executor:
+            futures = [
+                executor.submit(
+                    _run,
+                    scores, 
+                    [step_filt_len],
+                    merge_thresholds_abs,
+                    merge_thresholds_rel,
+                    either_abs_or_rel_threshold,
+                )
+                for step_filt_len in step_filter_lengths
             ]
-        else:
-            it = itertools.product(merge_thresholds_abs, merge_thresholds_rel)
-        for abs_thres, rel_thres in it:
-            pred = csebbs_predictor.copy()
-            pred.merge_threshold_abs = abs_thres
-            pred.merge_threshold_rel = rel_thres
-            csebbs.append((pred, pred._get_sebbs_from_change_detection(change_detection)))
+            csebbs_list = [future.result() for future in as_completed(futures)]
+
+        csebbs = reduce(add, csebbs_list)
+    else:
+        csebbs = []
+        for step_filt_len in step_filter_lengths:
+            csebbs.extend(
+                _run(scores, [step_filt_len], merge_thresholds_abs, merge_thresholds_rel, either_abs_or_rel_threshold)
+            )
+
     if folds is None:
         return selection_fn(csebbs, ground_truth, audio_durations, **selection_kwargs)
     return [selection_fn(csebbs, ground_truth, audio_durations, audio_ids=fold, **selection_kwargs) for fold in folds]
@@ -520,6 +580,7 @@ def select_best_psds(
     unit_of_time: str = "hour",
     max_efpr: float = 100.0,
     classwise: bool = True,
+    num_jobs: int = 1,
 ) -> Tuple[CSEBBsPredictor, dict]:
     """select parameters which give highest PSDS
 
@@ -555,13 +616,13 @@ def select_best_psds(
             predictor,
             sed_scores_from_sebbs(csebbs_i, sound_classes=predictor.sound_classes, audio_duration=audio_durations),
         )
-        for predictor, csebbs_i in csebbs
+        for predictor, csebbs_i in tqdm(csebbs, desc="Compute sed_scores", total=len(csebbs))
     ]
     best_step_filter_length = {}
     best_merge_threshold_abs = {}
     best_merge_threshold_rel = {}
     best_values = {}
-    for predictor, csebbs_scores_i in csebbs_scores:
+    for predictor, csebbs_scores_i in tqdm(csebbs_scores, desc="Select best PSDS", total=len(csebbs_scores)):
         single_class_psds = intersection_based.psds(
             scores=csebbs_scores_i,
             ground_truth=ground_truth,
@@ -572,6 +633,7 @@ def select_best_psds(
             alpha_ct=alpha_ct,
             unit_of_time=unit_of_time,
             max_efpr=max_efpr,
+            num_jobs=num_jobs,
         )[1]
         mean = np.mean(list(single_class_psds.values()))
         for sound_class in single_class_psds:
@@ -600,6 +662,8 @@ def select_best_cbf(
     offset_collar: float = 0.2,
     offset_collar_rate: float = 0.2,
     classwise: bool = True,
+    num_jobs: int = 1,
+    **kwargs,
 ) -> Tuple[CSEBBsPredictor, dict]:
     """select parameters which give highest collar-based F1-score
 
@@ -636,20 +700,22 @@ def select_best_cbf(
             predictor,
             sed_scores_from_sebbs(csebbs_i, sound_classes=predictor.sound_classes, audio_duration=audio_durations),
         )
-        for predictor, csebbs_i in csebbs
+        for predictor, csebbs_i in tqdm(csebbs, desc="Compute sed_scores", total=len(csebbs))
     ]
     best_step_filter_length = {}
     best_merge_threshold_abs = {}
     best_merge_threshold_rel = {}
     best_detection_threshold = {}
     best_values = {}
-    for predictor, csebbs_scores_i in csebbs_scores:
+
+    for predictor, csebbs_scores_i in tqdm(csebbs_scores, desc="Select best CBF", total=len(csebbs_scores)):
         f, _, _, thresholds_cbf, _ = collar_based.best_fscore(
             scores=csebbs_scores_i,
             ground_truth=ground_truth,
             onset_collar=onset_collar,
             offset_collar=offset_collar,
             offset_collar_rate=offset_collar_rate,
+            num_jobs=num_jobs,
         )
         for sound_class in thresholds_cbf:
             value = f[sound_class] if classwise else f["macro_average"]
@@ -685,6 +751,7 @@ def select_best_psds_and_cbf(
     offset_collar: float = 0.2,
     offset_collar_rate: float = 0.2,
     classwise: bool = True,
+    num_jobs: int = 1,
 ) -> dict:
     """Select both, best PSDS and collar-based parameters
 
@@ -727,6 +794,7 @@ def select_best_psds_and_cbf(
             unit_of_time=unit_of_time,
             max_efpr=max_efpr,
             classwise=classwise,
+            num_jobs=num_jobs,
         ),
         "cbf": select_best_cbf(
             csebbs,
@@ -737,5 +805,6 @@ def select_best_psds_and_cbf(
             offset_collar=offset_collar,
             offset_collar_rate=offset_collar_rate,
             classwise=classwise,
+            num_jobs=num_jobs,
         ),
     }
