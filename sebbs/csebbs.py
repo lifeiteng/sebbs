@@ -100,7 +100,7 @@ class CSEBBsPredictor:
                 data frame format for direct use with sed_scores_eval-based evaluation.
 
         Returns (dict of list|pd.DataFrame):
-            a list of SEBBs (onset, offset, class, confidence) (which may have
+            a list of SEBBs (onset, offset, class) (which may have
             been converted to a SED scores data frame) for each audio_id
 
         """
@@ -393,6 +393,7 @@ def tune(
     selection_fn: Callable,
     folds: Union[Iterable, None] = None,
     either_abs_or_rel_threshold: bool = True,
+    num_jobs: int = 1,
     **selection_kwargs,
 ) -> Union[Tuple[CSEBBsPredictor, dict], list]:
     """perform grid search over hyper-parameters
@@ -432,12 +433,12 @@ def tune(
     if isinstance(audio_durations, (str, Path)):
         audio_durations = io.read_audio_durations(audio_durations)
 
-    if True:
+    if num_jobs > 1:
         from concurrent.futures import ProcessPoolExecutor, as_completed
         from functools import reduce
         from operator import add
 
-        with ProcessPoolExecutor(max_workers=len(step_filter_lengths)) as executor:
+        with ProcessPoolExecutor(max_workers=num_jobs) as executor:
             futures = [
                 executor.submit(
                     _run,
@@ -460,8 +461,8 @@ def tune(
             )
 
     if folds is None:
-        return selection_fn(csebbs, ground_truth, audio_durations, **selection_kwargs)
-    return [selection_fn(csebbs, ground_truth, audio_durations, audio_ids=fold, **selection_kwargs) for fold in folds]
+        return selection_fn(csebbs, ground_truth, audio_durations, num_jobs=num_jobs, **selection_kwargs)
+    return [selection_fn(csebbs, ground_truth, audio_durations, audio_ids=fold, num_jobs=num_jobs, **selection_kwargs) for fold in folds]
 
 
 def cross_validation(
