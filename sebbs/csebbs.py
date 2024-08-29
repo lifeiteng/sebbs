@@ -198,9 +198,7 @@ class CSEBBsPredictor:
         else:
             step_filter_length = self.step_filter_length
         change_detection_out = {}
-        for key, scores_df in tqdm(
-            scores.items(), desc=f"Change detection", total=len(scores)
-        ):
+        for key, scores_df in scores.items():
             timestamps, self.sound_classes = validate_score_dataframe(scores_df, event_classes=self.sound_classes)
             scores_arr = scores_df[self.sound_classes].to_numpy()
             change_detection_out[key] = change_detection(scores_arr, timestamps, step_filter_length)
