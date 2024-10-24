@@ -14,7 +14,6 @@ from tqdm import tqdm
 from sebbs.change_detection import change_detection
 from sebbs.utils import sed_scores_from_detections, sed_scores_from_sebbs
 
-
 class CSEBBsPredictor:
     """change-point based predictor of Sound Event Bounding Boxes (cSEBBs).
 
@@ -87,6 +86,7 @@ class CSEBBsPredictor:
         self,
         scores: Union[str, dict],
         audio_ids: Union[Iterable, None] = None,
+        sound_classes: Union[list, None] = None,
         return_sed_scores: bool = False,
     ) -> dict:
         """run post-processing on scores to predict sebbs
@@ -109,11 +109,11 @@ class CSEBBsPredictor:
         if audio_ids is None:
             audio_ids = scores.keys()
         scores = {audio_id: scores[audio_id] for audio_id in audio_ids}
-        _, self.sound_classes = validate_score_dataframe(scores[list(audio_ids)[0]], event_classes=self.sound_classes)
-        change_detection = self._run_change_detection(scores)
-        sebbs = self._get_sebbs_from_change_detection(change_detection)
+        _, sound_classes = validate_score_dataframe(scores[list(audio_ids)[0]], event_classes=sound_classes or self.sound_classes)
+        change_detection = self._run_change_detection(scores, sound_classes)
+        sebbs = self._get_sebbs_from_change_detection(change_detection, sound_classes)
         if return_sed_scores:
-            return sed_scores_from_sebbs(sebbs, self.sound_classes)
+            return sed_scores_from_sebbs(sebbs, sound_classes)
         return sebbs
 
     def detect(
@@ -191,32 +191,34 @@ class CSEBBsPredictor:
             )
         return detections
 
-    def _run_change_detection(self, scores):
+    def _run_change_detection(self, scores, sound_classes: Union[list, None] = None,):
         """detect candidate segment boundaries/change points"""
+        sound_classes = sound_classes or self.sound_classes
         if isinstance(self.step_filter_length, dict):
-            step_filter_length = np.array([self.step_filter_length[sound_class] for sound_class in self.sound_classes])
+            step_filter_length = np.array([self.step_filter_length[sound_class] for sound_class in sound_classes])
         else:
             step_filter_length = self.step_filter_length
         change_detection_out = {}
         for key, scores_df in scores.items():
-            timestamps, self.sound_classes = validate_score_dataframe(scores_df, event_classes=self.sound_classes)
-            scores_arr = scores_df[self.sound_classes].to_numpy()
+            timestamps, sound_classes = validate_score_dataframe(scores_df, event_classes=sound_classes)
+            scores_arr = scores_df[sound_classes].to_numpy()
             change_detection_out[key] = change_detection(scores_arr, timestamps, step_filter_length)
         for key, det in change_detection_out.items():
             change_detection_out[key] = {
-                sound_class: change_detection_out[key][c] for c, sound_class in enumerate(self.sound_classes)
+                sound_class: change_detection_out[key][c] for c, sound_class in enumerate(sound_classes)
             }
         return change_detection_out
 
-    def _get_sebbs_from_change_detection(self, change_detection):
+    def _get_sebbs_from_change_detection(self, change_detection, sound_classes: Union[list, None] = None,):
         """perform merging of segments and infer SEBBs"""
+        sound_classes = sound_classes or self.sound_classes
         sebbs = {}
         for audio_id in change_detection.keys():
             onsets = []
             offsets = []
             confidences = []
             class_labels = []
-            for k, sound_class in enumerate(self.sound_classes):
+            for k, sound_class in enumerate(sound_classes):
                 seg_bounds, mean_scores_k, min_scores_k, max_scores_k = change_detection[audio_id][sound_class]
                 abs_thres = (
                     self.merge_threshold_abs[sound_class]
