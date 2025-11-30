@@ -27,12 +27,9 @@ here = path.abspath(path.dirname(__file__))
 with open(path.join(here, "README.md"), encoding="utf-8") as f:
     long_description = f.read()
 
-with open(path.join(here, "requirements.txt")) as f:
-    requirements = list(filter(lambda x: len(x) > 0 and not x.startswith("#"), f.read().split("\n")))
-
 st.setup(
     name="sebbs",
-    version="1.0.0",
+    version="1.0.1",
     description="Sound Event Bounding Boxes",
     long_description=long_description,
     long_description_content_type="text/markdown",
@@ -58,7 +55,7 @@ st.setup(
         "pandas",
         "scipy",
         "pathlib",
-        "sed_scores_eval",
+        "sed_scores_eval>=0.0.4",
         "Cython",
     ],
     extras_require={
