@@ -5,4 +5,4 @@
 numpy
 pathlib
 Cython
-sed_scores_eval>=0.0.4
+sed_scores_eval_np2>=0.0.4

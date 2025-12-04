@@ -29,7 +29,7 @@ with open(path.join(here, "README.md"), encoding="utf-8") as f:
 
 st.setup(
     name="sebbs",
-    version="1.0.1",
+    version="1.0.2",
     description="Sound Event Bounding Boxes",
     long_description=long_description,
     long_description_content_type="text/markdown",
@@ -47,6 +47,7 @@ st.setup(
         "Programming Language :: Python :: 3.11",
         "Programming Language :: Python :: 3.12",
         "Programming Language :: Python :: 3.13",
+        "Programming Language :: Python :: 3.14",
     ],
     keywords="sound event detection, polyphonic sound detection, post processing, change detection",
     packages=st.find_packages(exclude=["contrib", "docs", "tests*"]),
@@ -55,7 +56,7 @@ st.setup(
         "pandas",
         "scipy",
         "pathlib",
-        "sed_scores_eval>=0.0.4",
+        "sed_scores_eval_np2>=0.0.4",
         "Cython",
     ],
     extras_require={
