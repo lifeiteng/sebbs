@@ -211,7 +211,7 @@ class CSEBBsPredictor:
 
     def _get_sebbs_from_change_detection(self, change_detection, sound_classes: Union[list, None] = None,):
         """perform merging of segments and infer SEBBs"""
-        sound_classes = sound_classes or self.sound_classes
+        sound_classes = (sound_classes or self.sound_classes) or []
         sebbs = {}
         for audio_id in change_detection.keys():
             onsets = []
@@ -442,7 +442,7 @@ def tune(
             futures = [
                 executor.submit(
                     _run,
-                    scores, 
+                    scores,
                     [step_filt_len],
                     merge_thresholds_abs,
                     merge_thresholds_rel,
